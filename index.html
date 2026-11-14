@@ -77,6 +77,8 @@
   .top .mic{background:var(--a);} .bottom .mic{background:var(--b);}
   .mic.recording{background:var(--err); animation:pulse 1s infinite;}
   .send{background:#334155;}
+  .read{background:#334155;padding:0 12px;font-size:20px;}
+  .read.playing{background:var(--a);}
   .hint{font-size:11px;color:var(--muted);flex:0 0 auto;}
 
   footer{flex:0 0 auto; padding:8px 14px; border-top:1px solid var(--line); background:var(--bg);}
@@ -143,6 +145,7 @@
           <input class="txt" id="inA" placeholder="也可以直接输入文字…" autocomplete="off" />
           <button class="btn send" data-send="A">译</button>
         </div>
+        <button class="btn read" id="readA" title="朗读译文">🔊</button>
       </div>
     </section>
 
@@ -159,6 +162,7 @@
           <input class="txt" id="inB" placeholder="Type here…" autocomplete="off" />
           <button class="btn send" data-send="B">译</button>
         </div>
+        <button class="btn read" id="readB" title="Read aloud">🔊</button>
       </div>
     </section>
   </main>
@@ -283,18 +287,36 @@
   }
 
   /* ---------- 语音合成 ---------- */
+  var cachedVoices = [];
+  function loadVoices(){ if("speechSynthesis" in window){ var vv=window.speechSynthesis.getVoices()||[]; if(vv.length) cachedVoices=vv; } }
+  function pickVoice(prefLang){
+    loadVoices();
+    var p=(prefLang||"").toLowerCase().replace("_","-"); var base=p.slice(0,2);
+    return cachedVoices.find(function(x){return (x.lang||"").toLowerCase().replace("_","-")===p;})
+        || cachedVoices.find(function(x){return (x.lang||"").toLowerCase().indexOf(base)===0;})
+        || null;
+  }
   function speak(text, langCode){
-    if(!state.speak || !("speechSynthesis" in window)) return;
+    if(!("speechSynthesis" in window)){ setStatus("此浏览器不支持语音合成","warn"); return false; }
+    if(!text) return false;
+    var want = ttsLang(langCode);
+    loadVoices();
+    if(!cachedVoices.length){
+      setStatus("设备缺少可用语音引擎：安卓请在 系统设置→语言/无障碍→文字转语音 安装引擎并下载中/英文语音包；电脑请检查系统已装对应语音","warn");
+      return false;
+    }
     try{
-      window.speechSynthesis.cancel();
+      var synth = window.speechSynthesis;
+      synth.cancel();
       var u = new SpeechSynthesisUtterance(text);
-      u.lang = ttsLang(langCode);
-      var voices = window.speechSynthesis.getVoices();
-      var v = voices.find(function(x){ return x.lang && x.lang.toLowerCase().indexOf(u.lang.slice(0,2))===0; });
-      if(v) u.voice = v;
-      u.rate = 1.0; u.pitch = 1.0;
-      window.speechSynthesis.speak(u);
-    }catch(e){}
+      u.lang = want;
+      var v = pickVoice(want); if(v) u.voice = v;
+      u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+      u.onerror = function(e){ setStatus("朗读出错("+e.error+")，请检查系统语音引擎","warn"); };
+      // Chrome：cancel 后需稍等再 speak，否则首句常被吞；resume 防卡住
+      setTimeout(function(){ try{ synth.resume(); synth.speak(u); }catch(err){} }, 80);
+      return true;
+    }catch(e){ setStatus("朗读失败："+e.message,"warn"); return false; }
   }
 
   /* ---------- 语音识别（Web Speech API） ---------- */
@@ -347,9 +369,11 @@
       dstEl.classList.remove("empty"); dstEl.textContent = out;
       // 对方侧大字显示译文
       oppDst.classList.remove("empty"); oppDst.textContent = out;
+      // 记录译文语言，供朗读按钮使用
+      dstEl.dataset.lang = to; oppDst.dataset.lang = to;
       addLog(side, sourceText, out);
-      speak(out, to);
-      setStatus("已完成，可以轮到对方说话", "ok");
+      if(state.speak) speak(out, to);
+      setStatus("已完成，可点 🔊 重听译文", "ok");
     }catch(e){
       dstEl.textContent = "翻译失败："+e.message;
       setStatus("翻译失败，请重试或换引擎", "err");
@@ -406,6 +430,20 @@
   bindMic("micA","A");
   bindMic("micB","B");
 
+  function bindRead(btnId, dstId){
+    var btn=$(btnId), dst=$(dstId);
+    btn.addEventListener("click", function(){
+      var txt=(dst.textContent||"").trim();
+      if(dst.classList.contains("empty") || !txt || txt==="翻译中…" || txt.indexOf("译文将显示")>=0){
+        setStatus("先翻译，再点 🔊 朗读","warn"); return;
+      }
+      btn.classList.add("playing"); setTimeout(function(){btn.classList.remove("playing");},450);
+      speak(txt, dst.dataset.lang || state.langB);
+    });
+  }
+  bindRead("readA","dstA");
+  bindRead("readB","dstB");
+
   document.querySelectorAll(".btn.send").forEach(function(b){
     var side = b.getAttribute("data-send");
     var input = $(side==="A"?"inA":"inB");
@@ -451,8 +489,13 @@
   });
   $("clearLog").addEventListener("click", function(){ $("log").innerHTML=""; });
 
-  // 预加载语音
-  if("speechSynthesis" in window){ window.speechSynthesis.getVoices(); window.speechSynthesis.onvoiceschanged=function(){window.speechSynthesis.getVoices();}; }
+  // 预加载语音：列表常异步到达，监听 onvoiceschanged 并在首次触摸时再取一次
+  if("speechSynthesis" in window){
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    var once=function(){ loadVoices(); window.removeEventListener("pointerdown",once); };
+    window.addEventListener("pointerdown", once);
+  }
 
   // 初始化
   refreshLangs();
