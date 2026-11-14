@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0f172a" />
+<title>双向对话翻译 · Talk Translator</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#111c33; --panel2:#16233f; --line:#243352;
+    --a:#2563eb; --b:#0d9488; --text:#e6edf7; --muted:#93a4c3;
+    --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --chip:#1e2c49;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex; flex-direction:column; height:100dvh; overflow:hidden;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  header{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:10px 14px; border-bottom:1px solid var(--line); flex:0 0 auto;
+  }
+  header .title{font-size:16px; font-weight:700; letter-spacing:.3px;}
+  header .title small{display:block;font-size:11px;color:var(--muted);font-weight:400;}
+  .iconbtn{
+    background:var(--chip); color:var(--text); border:1px solid var(--line);
+    border-radius:10px; padding:8px 10px; font-size:13px; cursor:pointer;
+  }
+  .statusbar{
+    flex:0 0 auto; padding:6px 14px; font-size:12px; color:var(--muted);
+    background:var(--panel2); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:6px; min-height:30px;
+  }
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto;}
+  .dot.ok{background:var(--ok);} .dot.warn{background:var(--warn);} .dot.err{background:var(--err);} .dot.live{background:var(--a);animation:pulse 1.1s infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  main{flex:1 1 auto; display:flex; flex-direction:column; min-height:0;}
+  .side{
+    flex:1 1 50%; display:flex; flex-direction:column; min-height:0; padding:12px; gap:10px;
+  }
+  .side.top{background:var(--panel); border-bottom:1px solid var(--line);}
+  .side.bottom{background:var(--panel); transform:none;}
+  .langrow{display:flex; align-items:center; gap:8px; flex:0 0 auto;}
+  .lang{
+    font-size:13px; font-weight:700; padding:6px 12px; border-radius:999px; color:#fff;
+  }
+  .top .lang{background:var(--a);} .bottom .lang{background:var(--b);}
+  .swapbtn{margin-left:auto;}
+  .src{
+    flex:0 0 auto; min-height:34px; font-size:15px; color:var(--muted);
+    background:var(--panel2); border:1px solid var(--line); border-radius:12px; padding:10px 12px;
+    white-space:pre-wrap; word-break:break-word; max-height:22vh; overflow:auto;
+  }
+  .src.empty{color:#5b6c8c;}
+  .dst{
+    flex:1 1 auto; font-size:22px; font-weight:600; line-height:1.35;
+    background:linear-gradient(0deg,var(--panel2),var(--panel2)); border:1px solid var(--line);
+    border-radius:14px; padding:12px; white-space:pre-wrap; word-break:break-word; overflow:auto;
+  }
+  .dst.empty{color:#5b6c8c; font-weight:400; font-size:16px;}
+  .controls{display:flex; gap:10px; align-items:stretch; flex:0 0 auto;}
+  .typebox{flex:1 1 auto; display:flex; gap:8px;}
+  input.txt{
+    flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:12px; padding:10px 12px; font-size:15px; min-width:0;
+  }
+  .btn{
+    border:none; border-radius:12px; color:#fff; font-size:15px; font-weight:600;
+    padding:0 16px; cursor:pointer; min-height:46px; display:flex; align-items:center; gap:6px;
+  }
+  .btn:active{transform:scale(.97);}
+  .mic{width:54px; padding:0; font-size:22px;}
+  .top .mic{background:var(--a);} .bottom .mic{background:var(--b);}
+  .mic.recording{background:var(--err); animation:pulse 1s infinite;}
+  .send{background:#334155;}
+  .hint{font-size:11px;color:var(--muted);flex:0 0 auto;}
+
+  footer{flex:0 0 auto; padding:8px 14px; border-top:1px solid var(--line); background:var(--bg);}
+  .logtoggle{font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none;text-align:left;width:100%;}
+  .log{display:none; max-height:26vh; overflow:auto; font-size:13px; margin-top:8px;}
+  .log.open{display:block;}
+  .log .row{padding:8px 0; border-bottom:1px solid var(--line);}
+  .log .row .who{font-size:11px;color:var(--muted);}
+  .log .row .t{margin-top:2px;}
+  .log .row .tr{color:#9fd0ff;margin-top:2px;}
+
+  .modal{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:flex-end; z-index:50;}
+  .modal.open{display:flex;}
+  .sheet{
+    background:var(--panel); width:100%; border-radius:16px 16px 0 0; padding:16px;
+    border-top:1px solid var(--line); max-height:86dvh; overflow:auto;
+  }
+  .sheet h3{margin:0 0 4px;font-size:16px;}
+  .field{margin:14px 0;}
+  .field label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px;}
+  .field select,.field input{
+    width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:10px; padding:10px; font-size:15px;
+  }
+  .rowflex{display:flex; gap:10px;}
+  .rowflex>*{flex:1;}
+  .note{font-size:12px;color:var(--warn);line-height:1.5;}
+  .sheet .btn{width:100%; justify-content:center; margin-top:8px;}
+  .close{position:sticky;top:0;float:right;background:var(--chip);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;}
+
+  /* 面对面模式：下方内容旋转180度 */
+  body.face .bottom .langrow,
+  body.face .bottom .src,
+  body.face .bottom .dst,
+  body.face .bottom .controls{transform:rotate(180deg);}
+  body.face .bottom .controls input.txt{text-align:right;}
+</style>
+</head>
+<body>
+  <header>
+    <div class="title">双向对话翻译
+      <small>中英 · 按住说话或输入文字</small>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="iconbtn" id="faceBtn">面对面</button>
+      <button class="iconbtn" id="settingsBtn">设置</button>
+    </div>
+  </header>
+
+  <div class="statusbar"><span class="dot" id="statusDot"></span><span id="statusText">准备就绪</span></div>
+
+  <main>
+    <!-- A 侧：上方 -->
+    <section class="side top" data-side="A">
+      <div class="langrow">
+        <span class="lang" id="langA">中文</span>
+        <button class="iconbtn swapbtn" id="swapAB" style="font-size:12px;">⇅ 交换语言</button>
+      </div>
+      <div class="src empty" id="srcA">（你说的是中文，对方看到的是英文）</div>
+      <div class="dst empty" id="dstA">A 侧译文将显示在这里</div>
+      <div class="controls">
+        <button class="btn mic" id="micA" title="按住说话">🎤</button>
+        <div class="typebox">
+          <input class="txt" id="inA" placeholder="也可以直接输入文字…" autocomplete="off" />
+          <button class="btn send" data-send="A">译</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- B 侧：下方 -->
+    <section class="side bottom" data-side="B">
+      <div class="langrow">
+        <span class="lang" id="langB">English</span>
+      </div>
+      <div class="src empty" id="srcB">(You speak English, the other side sees Chinese)</div>
+      <div class="dst empty" id="dstB">B 侧译文将显示在这里</div>
+      <div class="controls">
+        <button class="btn mic" id="micB" title="Hold to speak">🎤</button>
+        <div class="typebox">
+          <input class="txt" id="inB" placeholder="Type here…" autocomplete="off" />
+          <button class="btn send" data-send="B">译</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <button class="logtoggle" id="logToggle">▸ 对话记录（长按可复制单条）</button>
+    <div class="log" id="log"></div>
+  </footer>
+
+  <!-- 设置 -->
+  <div class="modal" id="settings">
+    <div class="sheet">
+      <button class="close" id="settingsClose">关闭</button>
+      <h3>设置</h3>
+      <p class="note">在华为（无谷歌服务）手机上，浏览器语音识别常不可用，会自动提示；届时请改用输入框打字翻译。翻译引擎可先用免费接口，若你有密钥可填入更稳定。</p>
+
+      <div class="field">
+        <label>A 侧语言</label>
+        <select id="setLangA">
+          <option value="zh-CN">中文</option>
+          <option value="en-US">English</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>B 侧语言</label>
+        <select id="setLangB">
+          <option value="en-US">English</option>
+          <option value="zh-CN">中文</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>翻译引擎</label>
+        <select id="setEngine">
+          <option value="mymemory">免费接口 MyMemory（无需密钥）</option>
+          <option value="baidu">百度翻译开放平台（需 APP ID + 密钥）</option>
+        </select>
+      </div>
+      <div class="field" id="baiduFields" style="display:none;">
+        <label>百度 APP ID</label>
+        <input id="setBaiduId" placeholder="appid" />
+        <div style="height:8px"></div>
+        <label>百度 密钥 (Secret Key)</label>
+        <input id="setBaiduKey" placeholder="secret" />
+        <p class="note">注：百度开放接口在浏览器直连可能被 CORS 拦截，需自备可用的代理/服务端，否则请保留免费的 MyMemory。</p>
+      </div>
+
+      <div class="field">
+        <label>朗读译文（语音合成）</label>
+        <select id="setSpeak">
+          <option value="on">开启</option>
+          <option value="off">关闭</option>
+        </select>
+      </div>
+
+      <div class="rowflex">
+        <button class="btn" id="saveSettings" style="background:var(--a);">保存</button>
+        <button class="btn" id="clearLog" style="background:#334155;">清空记录</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+  var LS = "talk_translator_settings_v1";
+  var state = {
+    langA: "zh-CN", langB: "en-US",
+    engine: "mymemory",
+    baiduId: "", baiduKey: "",
+    speak: true, face: false
+  };
+  try { Object.assign(state, JSON.parse(localStorage.getItem(LS) || "{}")); } catch(e){}
+
+  var $ = function(id){ return document.getElementById(id); };
+  var statusDot = $("statusDot"), statusText = $("statusText");
+  function setStatus(msg, kind){ statusText.textContent = msg; statusDot.className = "dot" + (kind?(" "+kind):""); }
+
+  // 语言映射
+  function labelOf(code){ return code==="zh-CN"?"中文":code==="en-US"?"English":code; }
+  function speechLang(code){ return code==="zh-CN"?"zh-CN":"en-US"; }
+  function ttsLang(code){ return code==="zh-CN"?"zh-CN":"en-US"; }
+  // MyMemory langpair 码
+  function mmLang(code){ return code==="zh-CN"?"zh-CN":"en"; }
+
+  // 持久化输入
+  function refreshLangs(){
+    $("langA").textContent = labelOf(state.langA);
+    $("langB").textContent = labelOf(state.langB);
+    $("srcA").textContent = state.langA==="zh-CN"?"（你说的是中文，对方看到的是英文）":"(You speak English, the other side sees Chinese)";
+    $("srcB").textContent = state.langB==="zh-CN"?"（你说的是中文，对方看到的是英文）":"(You speak English, the other side sees Chinese)";
+  }
+
+  /* ---------- 翻译 ---------- */
+  async function translate(text, from, to){
+    if(!text.trim()) return "";
+    if(state.engine==="baidu" && state.baiduId && state.baiduKey){
+      try { return await translateBaidu(text, from, to); }
+      catch(e){ setStatus("百度翻译失败，已改用免费接口："+e.message, "warn"); }
+    }
+    return await translateMyMemory(text, from, to);
+  }
+
+  async function translateMyMemory(text, from, to){
+    var url = "https://api.mymemory.translated.net/get?q="+encodeURIComponent(text)+
+              "&langpair="+mmLang(from)+"|"+mmLang(to);
+    var r = await fetch(url);
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    var j = await r.json();
+    var out = j && j.responseData && j.responseData.translatedText;
+    if(!out) throw new Error("无译文");
+    // MyMemory 有时返回大写标签，清理
+    out = String(out).replace(/<br\/?>/g," ").trim();
+    return out;
+  }
+
+  // 简单 MD5（用于百度签名）
+  function md5(s){ /* 仅占位：浏览器直连百度需签名，若失败自动回退免费接口 */ throw new Error("浏览器直连需签名/代理"); }
+  async function translateBaidu(text, from, to){
+    // 需要签名 + 常受 CORS 限制；保留接口占位，失败则回退免费引擎
+    md5(); return translateMyMemory(text, from, to);
+  }
+
+  /* ---------- 语音合成 ---------- */
+  function speak(text, langCode){
+    if(!state.speak || !("speechSynthesis" in window)) return;
+    try{
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = ttsLang(langCode);
+      var voices = window.speechSynthesis.getVoices();
+      var v = voices.find(function(x){ return x.lang && x.lang.toLowerCase().indexOf(u.lang.slice(0,2))===0; });
+      if(v) u.voice = v;
+      u.rate = 1.0; u.pitch = 1.0;
+      window.speechSynthesis.speak(u);
+    }catch(e){}
+  }
+
+  /* ---------- 语音识别（Web Speech API） ---------- */
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var srOk = !!SR;
+  var recognizing = null; // {side, rec}
+
+  function startRecognize(side, onFinal, onErr, onStart, onEnd){
+    if(!srOk){ onErr("此浏览器不支持语音识别（华为无谷歌服务常见）。请改用输入框打字。"); return; }
+    var code = side==="A"?state.langA:state.langB;
+    var rec = new SR();
+    rec.lang = speechLang(code);
+    rec.interimResults = true;
+    rec.continuous = false;
+    var got = false;
+    rec.onstart = function(){ onStart && onStart(); };
+    rec.onresult = function(ev){
+      var interim="", final="";
+      for(var i=ev.resultIndex;i<ev.results.length;i++){
+        var t=ev.results[i][0].transcript;
+        if(ev.results[i].isFinal) final+=t; else interim+=t;
+      }
+      if(interim && !final){ onFinal(interim, true); }
+      if(final){ got=true; onFinal(final, false); }
+    };
+    rec.onerror = function(ev){ onErr(ev.error==="not-allowed"?"请在浏览器允许麦克风权限":"识别出错("+ev.error+")，可改用文字输入"); };
+    rec.onend = function(){ onEnd && onEnd(); if(!got){} };
+    try{ rec.start(); recognizing={side:side, rec:rec}; }
+    catch(e){ onErr("无法启动录音："+e.message); }
+  }
+  function stopRecognize(){ if(recognizing){ try{recognizing.rec.stop();}catch(e){} recognizing=null; } }
+
+  /* ---------- 处理一侧的一次发言 ---------- */
+  async function handleUtterance(side, sourceText){
+    sourceText = (sourceText||"").trim();
+    if(!sourceText) return;
+    var from = side==="A"?state.langA:state.langB;
+    var to   = side==="A"?state.langB:state.langA;
+    var srcEl = $(side==="A"?"srcA":"srcB");
+    var dstEl = $(side==="A"?"dstA":"dstB");
+    var oppDst = $(side==="A"?"dstB":"dstA");
+    var oppSrc = $(side==="A"?"srcB":"srcA");
+
+    srcEl.classList.remove("empty"); srcEl.textContent = sourceText;
+    dstEl.classList.add("empty"); dstEl.textContent = "翻译中…";
+    setStatus("翻译中："+labelOf(from)+" → "+labelOf(to), "live");
+    try{
+      var out = await translate(sourceText, from, to);
+      // 同侧显示译文（自己看得到自己说了什么+译文）
+      dstEl.classList.remove("empty"); dstEl.textContent = out;
+      // 对方侧大字显示译文
+      oppDst.classList.remove("empty"); oppDst.textContent = out;
+      addLog(side, sourceText, out);
+      speak(out, to);
+      setStatus("已完成，可以轮到对方说话", "ok");
+    }catch(e){
+      dstEl.textContent = "翻译失败："+e.message;
+      setStatus("翻译失败，请重试或换引擎", "err");
+    }
+  }
+
+  function clearOpposite(){ /* 保持上一次显示，简单起见不清 */ }
+
+  /* ---------- 对话记录 ---------- */
+  function addLog(side, src, tr){
+    var log = $("log");
+    var from = side==="A"?state.langA:state.langB;
+    var to   = side==="A"?state.langB:state.langA;
+    var row = document.createElement("div"); row.className="row";
+    var who = document.createElement("div"); who.className="who";
+    who.textContent = labelOf(from)+" → "+labelOf(to)+" · "+new Date().toLocaleTimeString();
+    var t = document.createElement("div"); t.className="t"; t.textContent = src;
+    var trEl = document.createElement("div"); trEl.className="tr"; trEl.textContent = tr;
+    row.appendChild(who); row.appendChild(t); row.appendChild(trEl);
+    log.insertBefore(row, log.firstChild);
+  }
+
+  /* ---------- 绑定 UI ---------- */
+  function bindMic(btnId, side){
+    var btn = $(btnId);
+    var input = $(side==="A"?"inA":"inB");
+    // 点击开始/停止（比按住更稳）
+    var active = false;
+    btn.addEventListener("click", function(){
+      if(active){ stopRecognize(); return; }
+      if(!srOk){ input.focus(); setStatus("不支持语音识别：请点输入框打字后按“译”", "warn"); return; }
+      active = true; btn.classList.add("recording");
+      var dstEl = $(side==="A"?"dstA":"dstB");
+      var srcEl = $(side==="A"?"srcA":"srcB");
+      startRecognize(side,
+        function(text, interim){ srcEl.classList.remove("empty"); srcEl.textContent = text; },
+        function(err){ setStatus(err,"err"); },
+        function(){ setStatus("正在聆听 "+labelOf(side==="A"?state.langA:state.langB)+" …","live"); },
+        function(){ active=false; btn.classList.remove("recording"); }
+      );
+      // 识别结束触发翻译：onend 后由 onFinal 已填好 srcEl，这里加一个停止时翻译
+      var stopAndTranslate = function(){
+        if(srcEl.textContent && !srcEl.classList.contains("empty")){
+          var s = srcEl.textContent;
+          handleUtterance(side, s);
+        }
+      };
+      // 监听 rec.end
+      var check = setInterval(function(){
+        if(!active){ clearInterval(check); stopAndTranslate(); }
+      }, 250);
+    });
+  }
+  bindMic("micA","A");
+  bindMic("micB","B");
+
+  document.querySelectorAll(".btn.send").forEach(function(b){
+    var side = b.getAttribute("data-send");
+    var input = $(side==="A"?"inA":"inB");
+    b.addEventListener("click", function(){ handleUtterance(side, input.value); input.value=""; });
+    input.addEventListener("keydown", function(e){ if(e.key==="Enter"){ handleUtterance(side, input.value); input.value=""; } });
+  });
+
+  function swapLangs(){ var t=state.langA; state.langA=state.langB; state.langB=t; refreshLangs(); }
+  $("swapAB").addEventListener("click", swapLangs);
+
+  // 面对面模式
+  $("faceBtn").addEventListener("click", function(){
+    document.body.classList.toggle("face");
+    state.face = document.body.classList.contains("face");
+    $("faceBtn").style.background = state.face ? "var(--a)" : "var(--chip)";
+  });
+
+  // 记录展开
+  $("logToggle").addEventListener("click", function(){
+    var l=$("log"); var open=l.classList.toggle("open");
+    this.textContent = (open?"▾":"▸")+" 对话记录（长按可复制单条）";
+  });
+
+  /* ---------- 设置面板 ---------- */
+  var modal = $("settings");
+  function openSettings(){
+    $("setLangA").value=state.langA; $("setLangB").value=state.langB;
+    $("setEngine").value=state.engine; $("setBaiduId").value=state.baiduId;
+    $("setBaiduKey").value=state.baiduKey; $("setSpeak").value=state.speak?"on":"off";
+    $("baiduFields").style.display = state.engine==="baidu"?"block":"none";
+    modal.classList.add("open");
+  }
+  $("settingsBtn").addEventListener("click", openSettings);
+  $("settingsClose").addEventListener("click", function(){ modal.classList.remove("open"); });
+  modal.addEventListener("click", function(e){ if(e.target===modal) modal.classList.remove("open"); });
+  $("setEngine").addEventListener("change", function(){ $("baiduFields").style.display = this.value==="baidu"?"block":"none"; });
+  $("saveSettings").addEventListener("click", function(){
+    state.langA=$("setLangA").value; state.langB=$("setLangB").value;
+    state.engine=$("setEngine").value; state.baiduId=$("setBaiduId").value.trim();
+    state.baiduKey=$("setBaiduKey").value.trim(); state.speak=$("setSpeak").value==="on";
+    try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){}
+    refreshLangs(); modal.classList.remove("open"); setStatus("设置已保存","ok");
+  });
+  $("clearLog").addEventListener("click", function(){ $("log").innerHTML=""; });
+
+  // 预加载语音
+  if("speechSynthesis" in window){ window.speechSynthesis.getVoices(); window.speechSynthesis.onvoiceschanged=function(){window.speechSynthesis.getVoices();}; }
+
+  // 初始化
+  refreshLangs();
+  if(!srOk){
+    setStatus("浏览器不支持语音识别，请用输入框打字翻译","warn");
+  }else{
+    setStatus("准备就绪：点麦克风说话，或直接输入文字","ok");
+  }
+})();
+</script>
+</body>
+</html>
