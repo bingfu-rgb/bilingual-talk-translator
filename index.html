@@ -87,13 +87,21 @@
   .hint{font-size:11px;color:var(--muted);flex:0 0 auto;}
 
   footer{flex:0 0 auto; padding:8px 14px; border-top:1px solid var(--line); background:var(--bg);}
-  .logtoggle{font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none;text-align:left;width:100%;}
+  .logtoggle{font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none;text-align:left;}
+  .logbar{display:flex; align-items:center; gap:10px;}
+  .logbar .logtoggle{flex:1 1 auto;}
+  .mini{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;flex:0 0 auto;}
   .log{display:none; max-height:26vh; overflow:auto; font-size:13px; margin-top:8px;}
   .log.open{display:block;}
   .log .row{padding:8px 0; border-bottom:1px solid var(--line);}
-  .log .row .who{font-size:11px;color:var(--muted);}
-  .log .row .t{margin-top:2px;}
-  .log .row .tr{color:#9fd0ff;margin-top:2px;}
+  .log .row .rowhead{display:flex; align-items:center; gap:8px;}
+  .log .row .who{font-size:11px;color:var(--muted);flex:1 1 auto;}
+  .log .row .t{margin-top:4px; word-break:break-word;}
+  .log .row .tr{margin-top:4px; color:#9fd0ff; word-break:break-word;}
+  .rowread{margin-left:8px; background:var(--chip); color:#fff; border:1px solid var(--line); border-radius:8px; padding:2px 9px; font-size:14px; cursor:pointer; vertical-align:middle;}
+  .rowread.playing{background:var(--a);}
+  .rowdel{background:none; color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:2px 8px; font-size:12px; cursor:pointer;}
+  .rowdel:hover{color:var(--err); border-color:var(--err);}
 
   .modal{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:flex-end; z-index:50;}
   .modal.open{display:flex;}
@@ -173,7 +181,10 @@
   </main>
 
   <footer>
-    <button class="logtoggle" id="logToggle">▸ 对话记录（长按可复制单条）</button>
+    <div class="logbar">
+      <button class="logtoggle" id="logToggle">▸ 对话记录（0 条 · 最多1000）</button>
+      <button class="mini" id="exportBtn">导出文本</button>
+    </div>
     <div class="log" id="log"></div>
   </footer>
 
@@ -220,6 +231,7 @@
     </div>
   </div>
 
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.js"></script>
 <script>
 (function(){
   "use strict";
@@ -445,7 +457,7 @@
       oppDst.classList.remove("empty"); oppDst.textContent = out;
       // 记录译文语言，供朗读按钮使用
       dstEl.dataset.lang = to; oppDst.dataset.lang = to;
-      addLog(side, sourceText, out);
+      saveMessage(from, to, sourceText, out);
       if(state.speak) speak(out, to);
       setStatus("已完成，可点 🔊 重听译文", "ok");
     }catch(e){
@@ -456,19 +468,143 @@
 
   function clearOpposite(){ /* 保持上一次显示，简单起见不清 */ }
 
-  /* ---------- 对话记录 ---------- */
-  function addLog(side, src, tr){
-    var log = $("log");
-    var from = side==="A"?state.langA:state.langB;
-    var to   = side==="A"?state.langB:state.langA;
-    var row = document.createElement("div"); row.className="row";
-    var who = document.createElement("div"); who.className="who";
-    who.textContent = labelOf(from)+" → "+labelOf(to)+" · "+new Date().toLocaleTimeString();
-    var t = document.createElement("div"); t.className="t"; t.textContent = src;
-    var trEl = document.createElement("div"); trEl.className="tr"; trEl.textContent = tr;
-    row.appendChild(who); row.appendChild(t); row.appendChild(trEl);
-    log.insertBefore(row, log.firstChild);
+  /* ---------- 对话记录（SQLite via sql.js + IndexedDB 持久化） ---------- */
+  var MAXHIST = 1000;
+  var SQL = null, db = null;
+
+  function idbOpen(){
+    return new Promise(function(res,rej){
+      if(!("indexedDB" in window)) return rej(new Error("此浏览器不支持 IndexedDB"));
+      var req = indexedDB.open("talktrans_db", 1);
+      req.onupgradeneeded = function(){ req.result.createObjectStore("kv"); };
+      req.onsuccess = function(){ res(req.result); };
+      req.onerror = function(){ rej(req.error); };
+    });
   }
+  function idbGet(){
+    return idbOpen().then(function(d){ return new Promise(function(res,rej){
+      var tx=d.transaction("kv").objectStore("kv").get("db");
+      tx.onsuccess=function(){ res(tx.result||null); }; tx.onerror=function(){ rej(tx.error); };
+    });});
+  }
+  function idbPut(data){
+    return idbOpen().then(function(d){ return new Promise(function(res,rej){
+      var tx=d.transaction("kv","readwrite"); tx.objectStore("kv").put(data,"db");
+      tx.oncomplete=function(){ res(); }; tx.onerror=function(){ rej(tx.error); };
+    });});
+  }
+
+  async function initDB(){
+    try{
+      if(typeof window.initSqlJs!=="function"){ setStatus("SQLite 引擎未加载（CDN 不可达），历史记录将不会被保存","warn"); return false; }
+      SQL = await window.initSqlJs({ locateFile: function(f){ return "https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/"+f; } });
+      var saved = await idbGet();
+      db = saved ? new SQL.Database(new Uint8Array(saved)) : new SQL.Database();
+      db.run("CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, from_code TEXT, to_code TEXT, source TEXT, translation TEXT);");
+      return true;
+    }catch(e){ db=null; setStatus("SQLite 初始化失败："+e.message,"warn"); return false; }
+  }
+
+  function saveMessage(fromCode, toCode, src, tr){
+    if(!db) return;
+    try{
+      db.run("INSERT INTO messages(ts,from_code,to_code,source,translation) VALUES(?,?,?,?,?);", [Date.now(), fromCode, toCode, src, tr]);
+      db.run("DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY ts DESC, id DESC LIMIT "+MAXHIST+");");
+      var data = db.export();
+      idbPut(data).catch(function(){});
+      renderHistory();
+    }catch(e){ setStatus("保存记录失败："+e.message,"warn"); }
+  }
+
+  function clearMessages(){
+    if(!db){ $("log").innerHTML=""; return; }
+    try{ db.run("DELETE FROM messages;"); }catch(e){}
+    try{ db.run("DELETE FROM sqlite_sequence WHERE name='messages';"); }catch(e){}
+    idbPut(db.export()).catch(function(){});
+    renderHistory();
+  }
+
+  var lastCount = 0;
+  function updateHistoryLabel(){
+    var open = $("log").classList.contains("open");
+    $("logToggle").textContent = (open?"▾":"▸")+" 对话记录（"+lastCount+" 条 · 最多"+MAXHIST+"）";
+  }
+
+  function makeReadBtn(text, langCode, title){
+    var rb=document.createElement("button"); rb.type="button"; rb.className="rowread"; rb.textContent="🔊";
+    rb.title=title; rb.dataset.lang=langCode; rb.dataset.text=text;
+    return rb;
+  }
+
+  function renderHistory(){
+    var log = $("log");
+    if(!db){ lastCount=0; updateHistoryLabel(); log.innerHTML = '<div class="row"><div class="who">历史记录不可用（未加载 SQLite）</div></div>'; return; }
+    var out=[];
+    try{ out = db.exec("SELECT id,ts,from_code,to_code,source,translation FROM messages ORDER BY ts DESC, id DESC LIMIT "+MAXHIST+";"); }catch(e){}
+    log.innerHTML="";
+    var rows = (out.length && out[0].values) ? out[0].values : [];
+    lastCount = rows.length;
+    if(!rows.length){
+      updateHistoryLabel();
+      var empty=document.createElement("div"); empty.className="row";
+      var ew=document.createElement("div"); ew.className="who"; ew.textContent="暂无对话记录";
+      empty.appendChild(ew); log.appendChild(empty); return;
+    }
+    rows.forEach(function(v){
+      var id=v[0], ts=v[1], fc=v[2], tc=v[3], src=v[4], tr=v[5];
+      var row=document.createElement("div"); row.className="row"; row.dataset.id=id;
+      var head=document.createElement("div"); head.className="rowhead";
+      var who=document.createElement("div"); who.className="who"; who.textContent=labelOf(fc)+" → "+labelOf(tc)+" · "+new Date(ts).toLocaleString();
+      var del=document.createElement("button"); del.type="button"; del.className="rowdel"; del.textContent="✕ 删除"; del.title="删除这条记录"; del.dataset.id=id;
+      head.appendChild(who); head.appendChild(del);
+      var t=document.createElement("div"); t.className="t"; t.textContent=src+" "; t.appendChild(makeReadBtn(src, fc, "朗读原文"));
+      var tre=document.createElement("div"); tre.className="tr"; tre.textContent=tr+" "; tre.appendChild(makeReadBtn(tr, tc, "朗读译文"));
+      row.appendChild(head); row.appendChild(t); row.appendChild(tre);
+      log.appendChild(row);
+    });
+    updateHistoryLabel();
+  }
+
+  function deleteMessage(id){
+    if(!db) return;
+    try{ db.run("DELETE FROM messages WHERE id=?;", [id]); idbPut(db.export()).catch(function(){}); renderHistory(); }
+    catch(e){ setStatus("删除失败："+e.message,"warn"); }
+  }
+
+  function exportHistory(){
+    if(!db){ setStatus("历史不可用，无法导出","warn"); return; }
+    var out=[];
+    try{ out = db.exec("SELECT ts,from_code,to_code,source,translation FROM messages ORDER BY ts ASC, id ASC;"); }catch(e){}
+    var rows = (out.length && out[0].values) ? out[0].values : [];
+    if(!rows.length){ setStatus("没有记录可导出","warn"); return; }
+    var lines = ["对话翻译记录导出  "+new Date().toLocaleString(), "共 "+rows.length+" 条", ""];
+    rows.forEach(function(v){
+      var ts=v[0],fc=v[1],tc=v[2],src=v[3],tr=v[4];
+      lines.push("["+new Date(ts).toLocaleString()+"] "+labelOf(fc)+" → "+labelOf(tc));
+      lines.push("  原文: "+src);
+      lines.push("  译文: "+tr);
+      lines.push("");
+    });
+    var text = lines.join("\n");
+    try{
+      var blob = new Blob([text], {type:"text/plain;charset=utf-8"});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href=url; a.download="translate-history-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")+".txt";
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+      setStatus("已导出 "+rows.length+" 条记录","ok");
+    }catch(e){ setStatus("导出失败："+e.message,"warn"); }
+  }
+
+  // 历史区点击委托：朗读(原文/译文) 与 删除单条
+  $("log").addEventListener("click", function(e){
+    var t=e.target; if(!t || !t.closest) return;
+    var rb=t.closest(".rowread");
+    if(rb){ var txt=(rb.dataset.text||"").trim(); if(!txt){setStatus("这段没有可朗读内容","warn");return;} rb.classList.add("playing"); setTimeout(function(){rb.classList.remove("playing");},450); speak(txt, rb.dataset.lang || state.langB); return; }
+    var del=t.closest(".rowdel");
+    if(del){ var id=parseInt(del.dataset.id,10); if(!isNaN(id)){ deleteMessage(id); setStatus("已删除 1 条记录","ok"); } }
+  });
 
   /* ---------- 绑定 UI ---------- */
   function bindMic(btnId, side){
@@ -543,11 +679,13 @@
     $("faceBtn").style.background = state.face ? "var(--a)" : "var(--chip)";
   });
 
-  // 记录展开
+  // 记录展开/收起（条数显示）
   $("logToggle").addEventListener("click", function(){
-    var l=$("log"); var open=l.classList.toggle("open");
-    this.textContent = (open?"▾":"▸")+" 对话记录（长按可复制单条）";
+    $("log").classList.toggle("open");
+    updateHistoryLabel();
   });
+  // 导出为文本文件
+  $("exportBtn").addEventListener("click", exportHistory);
 
   /* ---------- 设置面板 ---------- */
   var modal = $("settings");
@@ -570,7 +708,7 @@
     try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){}
     refreshLangs(); modal.classList.remove("open"); setStatus("设置已保存","ok");
   });
-  $("clearLog").addEventListener("click", function(){ $("log").innerHTML=""; });
+  $("clearLog").addEventListener("click", function(){ clearMessages(); setStatus("已清空对话记录","ok"); });
 
   // 预加载语音：列表常异步到达，监听 onvoiceschanged 并在首次触摸时再取一次
   if("speechSynthesis" in window){
@@ -580,13 +718,17 @@
     window.addEventListener("pointerdown", once);
   }
 
-  // 初始化
+  // 初始化：异步加载 SQLite 后渲染历史
   refreshLangs();
-  if(!srOk){
-    setStatus("浏览器不支持语音识别，请用输入框打字翻译","warn");
-  }else{
-    setStatus("准备就绪：点麦克风说话，或直接输入文字","ok");
-  }
+  (async function boot(){
+    var ok = await initDB();
+    renderHistory();
+    if(!srOk){
+      setStatus(ok?"就绪：说话或输入翻译（历史已启用本地SQLite）":"历史不可用（CDN），仍可翻译/朗读","warn");
+    }else{
+      setStatus(ok?"准备就绪：点麦克风说话，或直接输入文字":"准备就绪（历史持久化不可用）","ok");
+    }
+  })();
 })();
 </script>
 </body>
