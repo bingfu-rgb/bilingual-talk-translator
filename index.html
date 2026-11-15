@@ -289,48 +289,63 @@
   /* ---------- 语音合成 ---------- */
   var cachedVoices = [];
   var keepaliveTimer = null;
-  function loadVoices(){ if("speechSynthesis" in window){ var vv=window.speechSynthesis.getVoices()||[]; if(vv.length) cachedVoices=vv; } }
+  function loadVoices(){
+    if(!("speechSynthesis" in window)) return;
+    var vv = window.speechSynthesis.getVoices() || [];
+    if(vv.length){ cachedVoices = vv; return; }
+    // 列表为空：用一个空语音触发 Chrome 异步加载（随后会派发 onvoiceschanged）
+    try{ window.speechSynthesis.speak(new SpeechSynthesisUtterance("")); }catch(e){}
+  }
   function pickVoice(prefLang){
     loadVoices();
-    var p=(prefLang||"").toLowerCase().replace("_","-"); var base=p.slice(0,2);
-    return cachedVoices.find(function(x){return (x.lang||"").toLowerCase().replace("_","-")===p;})
-        || cachedVoices.find(function(x){return (x.lang||"").toLowerCase().indexOf(base)===0;})
-        || null;
+    var list = cachedVoices;
+    var p = (prefLang||"").toLowerCase().replace("_","-");
+    var base = p.slice(0,2);
+    var norm = function(x){ return (x.lang||"").toLowerCase().replace("_","-"); };
+    var isLocal = function(v){ return v.localService; };
+    var localFull = list.filter(function(v){return isLocal(v) && norm(v)===p;});
+    var localBase = list.filter(function(v){return isLocal(v) && norm(v).indexOf(base)===0;});
+    var localAny  = list.filter(isLocal);
+    var anyBase   = list.filter(function(v){return norm(v).indexOf(base)===0;});
+    // 关键：本地语音优先级 > 匹配语言的云端语音，避免华为网络下云端 Google 语音发不出声
+    return localFull[0] || localBase[0] || localAny[0] || anyBase[0] || list[0] || null;
   }
   function clearKeepalive(){ if(keepaliveTimer){ clearInterval(keepaliveTimer); keepaliveTimer=null; } }
   function speak(text, langCode){
     if(!("speechSynthesis" in window)){ setStatus("此浏览器不支持语音合成","warn"); return false; }
     if(!text) return false;
-    var want = ttsLang(langCode);
     var synth = window.speechSynthesis;
+    // 先解除"卡住/静音"状态：cancel + resume
+    clearKeepalive();
+    try{ synth.cancel(); }catch(e){}
+    try{ synth.resume(); }catch(e){}
     function go(){
+      loadVoices();
+      if(!cachedVoices.length){ setStatus("正在加载语音列表…请过一秒再点一次 🔊","warn"); return; }
+      var v = pickVoice(ttsLang(langCode));
       var u = new SpeechSynthesisUtterance(text);
-      u.lang = want;                       // 只设语言、不绑定 voice（贴合 Console 成功用法）
+      if(v){ u.voice = v; u.lang = v.lang || ttsLang(langCode); }
+      else { u.lang = ttsLang(langCode); }
       u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
-      u.onstart = function(){ setStatus("正在朗读…","live"); };
+      u.onstart = function(){ setStatus("正在朗读…（"+(u.voice?u.voice.name:"默认")+"）","live"); };
       u.onend   = function(){ clearKeepalive(); setStatus("朗读结束，可点 🔊 重听","ok"); };
       u.onerror = function(e){
         clearKeepalive();
         var err = e && e.error;
-        if(err==="interrupted"){ /* 正常被新一轮朗读打断，忽略 */ return; }
+        if(err==="interrupted"){ /* 正常被新一轮朗读打断 */ return; }
         if(err==="not-allowed"){ setStatus("浏览器拦截自动发声，请点 🔊 手动朗读","warn"); return; }
-        setStatus("朗读出错("+err+")","warn");
+        setStatus("朗读出错("+err+")，语音："+(u.voice?u.voice.name:"默认"),"warn");
       };
       try{ synth.speak(u); }catch(err){ setStatus("朗读启动失败："+err.message,"warn"); return; }
-      // Chrome 长句 ~15s 截断的续播保护
+      // 续播保护：防 15s 截断，也用于解除 pause 卡死
       clearKeepalive();
       keepaliveTimer = setInterval(function(){
-        if(synth.speaking){ try{ synth.pause(); synth.resume(); }catch(e){} }
+        if(synth.speaking || synth.paused){ try{ synth.resume(); }catch(e){} }
         else { clearKeepalive(); }
-      }, 9000);
+      }, 6000);
     }
-    // 上一段还在读才需要取消+补枪；空闲则直接同步开播，避免延迟把句子吞掉
-    if(synth.speaking || synth.pending){
-      try{ synth.cancel(); }catch(e){}
-      setTimeout(go, 60);
-    } else {
-      go();
-    }
+    // cancel 后隔一帧再开播，规避"取消后首句被吞"
+    setTimeout(go, 50);
     return true;
   }
 
