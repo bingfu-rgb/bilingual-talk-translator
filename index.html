@@ -49,6 +49,11 @@
     font-size:13px; font-weight:700; padding:6px 12px; border-radius:999px; color:#fff;
   }
   .top .lang{background:var(--a);} .bottom .lang{background:var(--b);}
+  select.langSel{
+    -webkit-appearance:none; appearance:none; border:none; cursor:pointer;
+    padding-right:10px; max-width:62%;
+  }
+  select.langSel option{color:#0f172a; background:#fff;}
   .swapbtn{margin-left:auto;}
   .src{
     flex:0 0 auto; min-height:34px; font-size:15px; color:var(--muted);
@@ -120,7 +125,7 @@
 <body>
   <header>
     <div class="title">双向对话翻译
-      <small>中英 · 按住说话或输入文字</small>
+      <small>多语种互译 · 选两侧语言，说话或输入</small>
     </div>
     <div style="display:flex;gap:8px;">
       <button class="iconbtn" id="faceBtn">面对面</button>
@@ -134,10 +139,10 @@
     <!-- A 侧：上方 -->
     <section class="side top" data-side="A">
       <div class="langrow">
-        <span class="lang" id="langA">中文</span>
+        <select class="lang langSel" id="langSelA"></select>
         <button class="iconbtn swapbtn" id="swapAB" style="font-size:12px;">⇅ 交换语言</button>
       </div>
-      <div class="src empty" id="srcA">（你说的是中文，对方看到的是英文）</div>
+      <div class="src empty" id="srcA">中文 → English</div>
       <div class="dst empty" id="dstA">A 侧译文将显示在这里</div>
       <div class="controls">
         <button class="btn mic" id="micA" title="按住说话">🎤</button>
@@ -152,9 +157,9 @@
     <!-- B 侧：下方 -->
     <section class="side bottom" data-side="B">
       <div class="langrow">
-        <span class="lang" id="langB">English</span>
+        <select class="lang langSel" id="langSelB"></select>
       </div>
-      <div class="src empty" id="srcB">(You speak English, the other side sees Chinese)</div>
+      <div class="src empty" id="srcB">English → 中文</div>
       <div class="dst empty" id="dstB">B 侧译文将显示在这里</div>
       <div class="controls">
         <button class="btn mic" id="micB" title="Hold to speak">🎤</button>
@@ -179,35 +184,25 @@
       <h3>设置</h3>
       <p class="note">在华为（无谷歌服务）手机上，浏览器语音识别常不可用，会自动提示；届时请改用输入框打字翻译。翻译引擎可先用免费接口，若你有密钥可填入更稳定。</p>
 
-      <div class="field">
-        <label>A 侧语言</label>
-        <select id="setLangA">
-          <option value="zh-CN">中文</option>
-          <option value="en-US">English</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>B 侧语言</label>
-        <select id="setLangB">
-          <option value="en-US">English</option>
-          <option value="zh-CN">中文</option>
-        </select>
-      </div>
+      <p class="note">语言请直接点上方两侧的彩色下拉框选择，任意两种语言可互译；点 "⇅ 交换语言" 可互换。</p>
 
       <div class="field">
         <label>翻译引擎</label>
         <select id="setEngine">
-          <option value="mymemory">免费接口 MyMemory（无需密钥）</option>
-          <option value="baidu">百度翻译开放平台（需 APP ID + 密钥）</option>
+          <option value="azure">Azure 翻译（推荐，支持全部语种，需密钥）</option>
+          <option value="mymemory">免费接口 MyMemory（无需密钥，仅中英可靠）</option>
         </select>
       </div>
-      <div class="field" id="baiduFields" style="display:none;">
-        <label>百度 APP ID</label>
-        <input id="setBaiduId" placeholder="appid" />
+      <div class="field" id="azureFields" style="display:none;">
+        <label>Azure 密钥 (Subscription Key)</label>
+        <input id="setAzureKey" placeholder="粘贴你的 Azure Translator Key" />
         <div style="height:8px"></div>
-        <label>百度 密钥 (Secret Key)</label>
-        <input id="setBaiduKey" placeholder="secret" />
-        <p class="note">注：百度开放接口在浏览器直连可能被 CORS 拦截，需自备可用的代理/服务端，否则请保留免费的 MyMemory。</p>
+        <label>Azure 区域 (Region)，全球资源可填 global</label>
+        <input id="setAzureRegion" placeholder="例如 eastasia / global" />
+        <div style="height:8px"></div>
+        <label>接口地址（一般不用改）</label>
+        <input id="setAzureEndpoint" placeholder="https://api.cognitive.microsofttranslator.com" />
+        <p class="note">在微软 Azure 搜索创建 “Translator / 翻译资源” 即可拿到 Key 和区域；免费 F0 层每月约 200 万字符。</p>
       </div>
 
       <div class="field">
@@ -228,11 +223,12 @@
 <script>
 (function(){
   "use strict";
-  var LS = "talk_translator_settings_v1";
+  var LS = "talk_translator_settings_v2";
   var state = {
     langA: "zh-CN", langB: "en-US",
     engine: "mymemory",
-    baiduId: "", baiduKey: "",
+    azureKey: "", azureRegion: "",
+    azureEndpoint: "https://api.cognitive.microsofttranslator.com",
     speak: true, face: false
   };
   try { Object.assign(state, JSON.parse(localStorage.getItem(LS) || "{}")); } catch(e){}
@@ -241,27 +237,59 @@
   var statusDot = $("statusDot"), statusText = $("statusText");
   function setStatus(msg, kind){ statusText.textContent = msg; statusDot.className = "dot" + (kind?(" "+kind):""); }
 
-  // 语言映射
-  function labelOf(code){ return code==="zh-CN"?"中文":code==="en-US"?"English":code; }
-  function speechLang(code){ return code==="zh-CN"?"zh-CN":"en-US"; }
-  function ttsLang(code){ return code==="zh-CN"?"zh-CN":"en-US"; }
-  // MyMemory langpair 码
-  function mmLang(code){ return code==="zh-CN"?"zh-CN":"en"; }
+  // 语言注册表：code=内部/BCP47, mm=MyMemory langpair 码
+  var LANGS = [
+    {code:"zh-CN", label:"中文",       mm:"zh-CN"},
+    {code:"en-US", label:"English",    mm:"en"},
+    {code:"ru-RU", label:"Русский",    mm:"ru"},
+    {code:"fr-FR", label:"Français",   mm:"fr"},
+    {code:"de-DE", label:"Deutsch",    mm:"de"},
+    {code:"ja-JP", label:"日本語",      mm:"ja"},
+    {code:"ko-KR", label:"한국어",      mm:"ko"},
+    {code:"es-ES", label:"Español",    mm:"es"},
+    {code:"it-IT", label:"Italiano",   mm:"it"},
+    {code:"pt-BR", label:"Português",  mm:"pt-BR"},
+    {code:"th-TH", label:"ไทย",         mm:"th"},
+    {code:"vi-VN", label:"Tiếng Việt", mm:"vi"},
+    {code:"ar-SA", label:"العربية",    mm:"ar"}
+  ];
+  var LANGMAP = {}; LANGS.forEach(function(l){ LANGMAP[l.code]=l; });
+  // 旧设置里可能残留不在列表的语言，回退到英文
+  if(!LANGMAP[state.langA]) state.langA = "en-US";
+  if(!LANGMAP[state.langB]) state.langB = "zh-CN";
+  function lang(code){ return LANGMAP[code] || {code:code,label:code,mm:(code||"").split("-")[0]}; }
+  function labelOf(code){ return lang(code).label; }
+  function speechLang(code){ return code; }   // BCP47，用于语音识别
+  function ttsLang(code){ return code; }      // 用于语音合成
+  function mmLang(code){ return lang(code).mm; } // 用于 MyMemory
+
+  // 把语言列表填充到 <select>
+  function fillLangSelect(sel, selected){
+    sel.innerHTML = "";
+    LANGS.forEach(function(l){
+      var o = document.createElement("option");
+      o.value = l.code; o.textContent = l.label;
+      sel.appendChild(o);
+    });
+    sel.value = selected;
+  }
 
   // 持久化输入
   function refreshLangs(){
-    $("langA").textContent = labelOf(state.langA);
-    $("langB").textContent = labelOf(state.langB);
-    $("srcA").textContent = state.langA==="zh-CN"?"（你说的是中文，对方看到的是英文）":"(You speak English, the other side sees Chinese)";
-    $("srcB").textContent = state.langB==="zh-CN"?"（你说的是中文，对方看到的是英文）":"(You speak English, the other side sees Chinese)";
+    var sa=$("langSelA"), sb=$("langSelB");
+    if(sa.value!==state.langA) sa.value=state.langA;
+    if(sb.value!==state.langB) sb.value=state.langB;
+    $("srcA").textContent = labelOf(state.langA)+" → "+labelOf(state.langB);
+    $("srcB").textContent = labelOf(state.langB)+" → "+labelOf(state.langA);
+    $("srcA").classList.add("empty");
+    $("srcB").classList.add("empty");
   }
 
   /* ---------- 翻译 ---------- */
   async function translate(text, from, to){
     if(!text.trim()) return "";
-    if(state.engine==="baidu" && state.baiduId && state.baiduKey){
-      try { return await translateBaidu(text, from, to); }
-      catch(e){ setStatus("百度翻译失败，已改用免费接口："+e.message, "warn"); }
+    if(state.engine==="azure" && state.azureKey){
+      return await translateAzure(text, from, to);
     }
     return await translateMyMemory(text, from, to);
   }
@@ -279,11 +307,27 @@
     return out;
   }
 
-  // 简单 MD5（用于百度签名）
-  function md5(s){ /* 仅占位：浏览器直连百度需签名，若失败自动回退免费接口 */ throw new Error("浏览器直连需签名/代理"); }
-  async function translateBaidu(text, from, to){
-    // 需要签名 + 常受 CORS 限制；保留接口占位，失败则回退免费引擎
-    md5(); return translateMyMemory(text, from, to);
+  // 内部码 → Azure Translator 语种码
+  function azCode(code){
+    if(code==="zh-CN") return "zh-Hans";
+    if(code==="pt-BR") return "pt";
+    return (code||"").split("-")[0];
+  }
+  async function translateAzure(text, from, to){
+    var ep = (state.azureEndpoint||"https://api.cognitive.microsofttranslator.com").replace(/\/+$/,"");
+    var url = ep + "/translate?api-version=3.0&to=" + encodeURIComponent(azCode(to));
+    if(azCode(from)) url += "&from=" + encodeURIComponent(azCode(from));
+    var headers = {
+      "Ocp-Apim-Subscription-Key": state.azureKey,
+      "Content-Type": "application/json"
+    };
+    if(state.azureRegion) headers["Ocp-Apim-Subscription-Region"] = state.azureRegion;
+    var r = await fetch(url, { method:"POST", headers:headers, body: JSON.stringify([{ Text:text }]) });
+    if(!r.ok){ var t=await r.text(); throw new Error("HTTP "+r.status+" "+(t||"").slice(0,120)); }
+    var j = await r.json();
+    var out = j && j[0] && j[0].translations && j[0].translations[0] && j[0].translations[0].text;
+    if(!out) throw new Error("无译文");
+    return out;
   }
 
   /* ---------- 语音合成 ---------- */
@@ -481,8 +525,16 @@
     input.addEventListener("keydown", function(e){ if(e.key==="Enter"){ handleUtterance(side, input.value); input.value=""; } });
   });
 
-  function swapLangs(){ var t=state.langA; state.langA=state.langB; state.langB=t; refreshLangs(); }
+  function swapLangs(){ var t=state.langA; state.langA=state.langB; state.langB=t; refreshLangs(); saveState(); }
   $("swapAB").addEventListener("click", swapLangs);
+
+  function saveState(){ try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){} }
+
+  // 语言选择框
+  fillLangSelect($("langSelA"), state.langA);
+  fillLangSelect($("langSelB"), state.langB);
+  $("langSelA").addEventListener("change", function(){ state.langA=this.value; if(state.langA===state.langB){ /* 允许相同，提示无意义 */ } refreshLangs(); saveState(); });
+  $("langSelB").addEventListener("change", function(){ state.langB=this.value; refreshLangs(); saveState(); });
 
   // 面对面模式
   $("faceBtn").addEventListener("click", function(){
@@ -500,20 +552,21 @@
   /* ---------- 设置面板 ---------- */
   var modal = $("settings");
   function openSettings(){
-    $("setLangA").value=state.langA; $("setLangB").value=state.langB;
-    $("setEngine").value=state.engine; $("setBaiduId").value=state.baiduId;
-    $("setBaiduKey").value=state.baiduKey; $("setSpeak").value=state.speak?"on":"off";
-    $("baiduFields").style.display = state.engine==="baidu"?"block":"none";
+    $("setEngine").value=state.engine; $("setAzureKey").value=state.azureKey;
+    $("setAzureRegion").value=state.azureRegion; $("setAzureEndpoint").value=state.azureEndpoint;
+    $("setSpeak").value=state.speak?"on":"off";
+    $("azureFields").style.display = state.engine==="azure"?"block":"none";
     modal.classList.add("open");
   }
   $("settingsBtn").addEventListener("click", openSettings);
   $("settingsClose").addEventListener("click", function(){ modal.classList.remove("open"); });
   modal.addEventListener("click", function(e){ if(e.target===modal) modal.classList.remove("open"); });
-  $("setEngine").addEventListener("change", function(){ $("baiduFields").style.display = this.value==="baidu"?"block":"none"; });
+  $("setEngine").addEventListener("change", function(){ $("azureFields").style.display = this.value==="azure"?"block":"none"; });
   $("saveSettings").addEventListener("click", function(){
-    state.langA=$("setLangA").value; state.langB=$("setLangB").value;
-    state.engine=$("setEngine").value; state.baiduId=$("setBaiduId").value.trim();
-    state.baiduKey=$("setBaiduKey").value.trim(); state.speak=$("setSpeak").value==="on";
+    state.engine=$("setEngine").value; state.azureKey=$("setAzureKey").value.trim();
+    state.azureRegion=$("setAzureRegion").value.trim();
+    state.azureEndpoint=$("setAzureEndpoint").value.trim() || "https://api.cognitive.microsofttranslator.com";
+    state.speak=$("setSpeak").value==="on";
     try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){}
     refreshLangs(); modal.classList.remove("open"); setStatus("设置已保存","ok");
   });
