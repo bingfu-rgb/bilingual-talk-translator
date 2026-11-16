@@ -25,6 +25,7 @@
   }
   header .title{font-size:16px; font-weight:700; letter-spacing:.3px;}
   header .title small{display:block;font-size:11px;color:var(--muted);font-weight:400;}
+  .ver{display:inline-block;margin-left:6px;padding:1px 6px;border:1px solid var(--line);border-radius:999px;font-size:10px;color:var(--muted);vertical-align:middle;}
   .iconbtn{
     background:var(--chip); color:var(--text); border:1px solid var(--line);
     border-radius:10px; padding:8px 10px; font-size:13px; cursor:pointer;
@@ -93,6 +94,10 @@
   .mini{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;flex:0 0 auto;}
   .log{display:none; max-height:26vh; overflow:auto; font-size:13px; margin-top:8px;}
   .log.open{display:block;}
+  .logfilter{display:none; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;}
+  .logfilter.open{display:flex;}
+  .logfilter input{flex:1 1 140px; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:7px 9px; font-size:13px; min-width:0;}
+  .logfilter select{flex:0 1 auto; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:7px 9px; font-size:13px; max-width:52%;}
   .log .row{padding:8px 0; border-bottom:1px solid var(--line);}
   .log .row .rowhead{display:flex; align-items:center; gap:8px;}
   .log .row .who{font-size:11px;color:var(--muted);flex:1 1 auto;}
@@ -133,7 +138,7 @@
 <body>
   <header>
     <div class="title">双向对话翻译
-      <small>多语种互译 · 选两侧语言，说话或输入</small>
+      <small>多语种互译 · 选两侧语言，说话或输入<span class="ver" id="verTag"></span></small>
     </div>
     <div style="display:flex;gap:8px;">
       <button class="iconbtn" id="faceBtn">面对面</button>
@@ -183,7 +188,15 @@
   <footer>
     <div class="logbar">
       <button class="logtoggle" id="logToggle">▸ 对话记录（0 条 · 最多1000）</button>
-      <button class="mini" id="exportBtn">导出文本</button>
+      <button class="mini" id="exportBtn">导出TXT</button>
+      <button class="mini" id="exportCsvBtn">导出CSV</button>
+      <button class="mini" id="importBtn">导入CSV</button>
+      <input type="file" id="importFile" accept=".csv,.txt,text/csv" style="display:none;">
+    </div>
+    <div class="logfilter" id="logFilter">
+      <input type="search" id="searchBox" placeholder="搜索原文/译文…" autocomplete="off" />
+      <select id="pairFilter"><option value="">全部语言对</option></select>
+      <button class="mini" id="clearFilterBtn">清除筛选</button>
     </div>
     <div class="log" id="log"></div>
   </footer>
@@ -235,6 +248,9 @@
 <script>
 (function(){
   "use strict";
+  // 版本号 V0.0.1。更新规则：每次更新给最后一段 +1；最后两段各自最大到 999，
+  // 某段达到 999 后再 +1 就归零并向左进 1（如 V0.0.999 → V0.1.0；V0.999.999 → V1.0.0）。
+  var APP_VERSION = "V0.0.1";
   var LS = "talk_translator_settings_v2";
   var state = {
     langA: "zh-CN", langB: "en-US",
@@ -524,11 +540,45 @@
     renderHistory();
   }
 
-  var lastCount = 0;
+  var lastCount = 0, shownCount = 0;
+  var filterText = "", filterPair = "";
+
+  function getTotalCount(){
+    if(!db) return 0;
+    try{ var r=db.exec("SELECT COUNT(*) FROM messages;"); return (r&&r[0]&&r[0].values&&r[0].values[0])?r[0].values[0][0]:0; }catch(e){ return 0; }
+  }
+  // 依据库中实际出现过的语言对，重建筛选下拉，并尽量保留当前选择
+  function refreshPairOptions(){
+    var sel = $("pairFilter"); if(!sel) return;
+    var pairs = [];
+    if(db){ try{ var o=db.exec("SELECT DISTINCT from_code,to_code FROM messages ORDER BY from_code,to_code;"); pairs=(o&&o[0]&&o[0].values)?o[0].values:[]; }catch(e){} }
+    sel.innerHTML="";
+    var o0=document.createElement("option"); o0.value=""; o0.textContent="全部语言对"; sel.appendChild(o0);
+    pairs.forEach(function(p){ var o=document.createElement("option"); o.value=p[0]+"|"+p[1]; o.textContent=labelOf(p[0])+" → "+labelOf(p[1]); sel.appendChild(o); });
+    var exists=false; for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===filterPair){ exists=true; break; } }
+    if(!exists) filterPair="";
+    sel.value=filterPair;
+  }
   function updateHistoryLabel(){
     var open = $("log").classList.contains("open");
-    $("logToggle").textContent = (open?"▾":"▸")+" 对话记录（"+lastCount+" 条 · 最多"+MAXHIST+"）";
+    var filtering = filterText || filterPair;
+    var base = filtering
+      ? "对话记录（显示 "+shownCount+" / 共 "+lastCount+" · 最多"+MAXHIST+"）"
+      : "对话记录（"+lastCount+" 条 · 最多"+MAXHIST+"）";
+    $("logToggle").textContent = (open?"▾":"▸")+" "+base;
   }
+
+  function downloadBlob(content, mime, filename){
+    try{
+      var blob=new Blob([content],{type:mime});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a"); a.href=url; a.download=filename;
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); },1000);
+      return true;
+    }catch(e){ setStatus("下载失败："+e.message,"warn"); return false; }
+  }
+  function stamp(){ return new Date().toISOString().slice(0,19).replace(/[:T]/g,"-"); }
 
   function makeReadBtn(text, langCode, title){
     var rb=document.createElement("button"); rb.type="button"; rb.className="rowread"; rb.textContent="🔊";
@@ -538,16 +588,25 @@
 
   function renderHistory(){
     var log = $("log");
-    if(!db){ lastCount=0; updateHistoryLabel(); log.innerHTML = '<div class="row"><div class="who">历史记录不可用（未加载 SQLite）</div></div>'; return; }
+    if(!db){ lastCount=0; shownCount=0; refreshPairOptions(); updateHistoryLabel(); log.innerHTML = '<div class="row"><div class="who">历史记录不可用（未加载 SQLite）</div></div>'; return; }
+    var total = getTotalCount();
     var out=[];
     try{ out = db.exec("SELECT id,ts,from_code,to_code,source,translation FROM messages ORDER BY ts DESC, id DESC LIMIT "+MAXHIST+";"); }catch(e){}
+    var all = (out.length && out[0] && out[0].values) ? out[0].values : [];
+    refreshPairOptions();
+    var ftxt = filterText.toLowerCase();
+    var rows = all.filter(function(v){
+      if(filterPair && (v[2]+"|"+v[3])!==filterPair) return false;
+      if(ftxt){ var s=(v[4]||"").toLowerCase(), t=(v[5]||"").toLowerCase(); if(s.indexOf(ftxt)<0 && t.indexOf(ftxt)<0) return false; }
+      return true;
+    });
+    lastCount = total; shownCount = rows.length;
     log.innerHTML="";
-    var rows = (out.length && out[0].values) ? out[0].values : [];
-    lastCount = rows.length;
     if(!rows.length){
       updateHistoryLabel();
       var empty=document.createElement("div"); empty.className="row";
-      var ew=document.createElement("div"); ew.className="who"; ew.textContent="暂无对话记录";
+      var ew=document.createElement("div"); ew.className="who";
+      ew.textContent = (total>0) ? "无匹配记录" : "暂无对话记录";
       empty.appendChild(ew); log.appendChild(empty); return;
     }
     rows.forEach(function(v){
@@ -586,15 +645,63 @@
       lines.push("");
     });
     var text = lines.join("\n");
-    try{
-      var blob = new Blob([text], {type:"text/plain;charset=utf-8"});
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement("a");
-      a.href=url; a.download="translate-history-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")+".txt";
-      document.body.appendChild(a); a.click();
-      setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-      setStatus("已导出 "+rows.length+" 条记录","ok");
-    }catch(e){ setStatus("导出失败："+e.message,"warn"); }
+    if(downloadBlob(text,"text/plain;charset=utf-8","translate-history-"+stamp()+".txt")) setStatus("已导出 "+rows.length+" 条记录","ok");
+  }
+
+  function csvCell(x){ x=(x==null?"":String(x)); return /[",\r\n]/.test(x) ? '"'+x.replace(/"/g,'""')+'"' : x; }
+  function exportCsv(){
+    if(!db){ setStatus("历史不可用，无法导出","warn"); return; }
+    var out=[];
+    try{ out = db.exec("SELECT ts,from_code,to_code,source,translation FROM messages ORDER BY ts ASC, id ASC;"); }catch(e){}
+    var rows = (out.length && out[0] && out[0].values) ? out[0].values : [];
+    if(!rows.length){ setStatus("没有记录可导出","warn"); return; }
+    var lines = ["timestamp,datetime,from,to,source,translation"];
+    rows.forEach(function(v){
+      lines.push([v[0], csvCell(new Date(v[0]).toLocaleString()), csvCell(v[1]), csvCell(v[2]), csvCell(v[3]), csvCell(v[4])].join(","));
+    });
+    if(downloadBlob(lines.join("\r\n"),"text/csv;charset=utf-8","translate-history-"+stamp()+".csv")) setStatus("已导出 CSV："+rows.length+" 条","ok");
+  }
+
+  // 解析 CSV（支持引号、转义双引号、CRLF）
+  function parseCsv(text){
+    text = String(text||"").replace(/^\uFEFF/,"");
+    var rows=[], row=[], field="", i=0, n=text.length, inQ=false;
+    while(i<n){
+      var c=text[i];
+      if(inQ){
+        if(c==='"'){ if(text[i+1]==='"'){ field+='"'; i+=2; continue; } inQ=false; i++; continue; }
+        field+=c; i++; continue;
+      } else {
+        if(c==='"'){ inQ=true; i++; continue; }
+        if(c===','){ row.push(field); field=""; i++; continue; }
+        if(c==='\r'){ i++; continue; }
+        if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=""; i++; continue; }
+        field+=c; i++; continue;
+      }
+    }
+    if(field.length>0 || row.length>0){ row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  // 导入 CSV/TXT（按列 timestamp,from,to,source,translation；自动跳过表头）
+  function importCsv(text, name){
+    if(!db){ setStatus("历史不可用，无法导入","warn"); return; }
+    var rows = parseCsv(text);
+    if(!rows.length){ setStatus("文件为空","warn"); return; }
+    var start = (isNaN(parseInt(rows[0][0],10)) ? 1 : 0);
+    var added = 0;
+    for(var r=start; r<rows.length; r++){
+      var v = rows[r]; if(!v || v.length<5) continue;
+      var ts = parseInt(v[0],10); if(isNaN(ts)) ts = Date.now();
+      var fc = (v[2]||"").trim(), tc = (v[3]||"").trim(), src = v[4]||"", tr = v[5]||"";
+      if(!fc && !tc && !src && !tr) continue;
+      db.run("INSERT INTO messages(ts,from_code,to_code,source,translation) VALUES(?,?,?,?,?);", [ts,fc,tc,src,tr]);
+      added++;
+    }
+    db.run("DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY ts DESC, id DESC LIMIT "+MAXHIST+");");
+    idbPut(db.export()).catch(function(){});
+    renderHistory();
+    setStatus(added?("已导入 "+added+" 条（来自 "+name+"）"):"没有可导入的记录","ok");
   }
 
   // 历史区点击委托：朗读(原文/译文) 与 删除单条
@@ -679,13 +786,31 @@
     $("faceBtn").style.background = state.face ? "var(--a)" : "var(--chip)";
   });
 
-  // 记录展开/收起（条数显示）
+  // 记录展开/收起（条数显示，同时显示/隐藏筛选栏）
   $("logToggle").addEventListener("click", function(){
-    $("log").classList.toggle("open");
+    var open = $("log").classList.toggle("open");
+    $("logFilter").classList.toggle("open", open);
     updateHistoryLabel();
   });
-  // 导出为文本文件
+  // 导出 TXT
   $("exportBtn").addEventListener("click", exportHistory);
+  // 导出 CSV
+  $("exportCsvBtn").addEventListener("click", exportCsv);
+  // 导入 CSV（触发隐藏文件选择框）
+  $("importBtn").addEventListener("click", function(){ $("importFile").value=""; $("importFile").click(); });
+  $("importFile").addEventListener("change", function(){
+    var f=this.files && this.files[0]; if(!f) return;
+    var rd=new FileReader();
+    rd.onload=function(){ importCsv(String(rd.result||""), f.name); };
+    rd.onerror=function(){ setStatus("读取文件失败","warn"); };
+    rd.readAsText(f,"utf-8");
+  });
+  // 搜索 / 语言对筛选
+  $("searchBox").addEventListener("input", function(){ filterText=this.value; renderHistory(); });
+  $("pairFilter").addEventListener("change", function(){ filterPair=this.value; renderHistory(); });
+  $("clearFilterBtn").addEventListener("click", function(){
+    filterText=""; filterPair=""; $("searchBox").value=""; $("pairFilter").value=""; renderHistory();
+  });
 
   /* ---------- 设置面板 ---------- */
   var modal = $("settings");
@@ -719,6 +844,7 @@
   }
 
   // 初始化：异步加载 SQLite 后渲染历史
+  $("verTag").textContent = APP_VERSION;
   refreshLangs();
   (async function boot(){
     var ok = await initDB();
